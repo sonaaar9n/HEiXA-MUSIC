@@ -1,4 +1,4 @@
-name: Build APK from ZIP
+name: Build APK from ZIP 
 
 on:
   push:
