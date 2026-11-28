@@ -1,0 +1,68 @@
+name: Build APK from ZIP
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unzip project
+        run: |
+          ZIP=$(ls *.zip 2>/dev/null | head -n 1)
+          if [ -z "$ZIP" ]; then echo "Repo ke root mein koi .zip nahi mili"; exit 1; fi
+          echo "ZIP: $ZIP"
+          mkdir -p "$RUNNER_TEMP/proj"
+          unzip -q "$ZIP" -d "$RUNNER_TEMP/proj"
+          SETTINGS=$(find "$RUNNER_TEMP/proj" -name settings.gradle.kts | head -n 1)
+          if [ -z "$SETTINGS" ]; then echo "ZIP ke andar settings.gradle.kts nahi mili"; exit 1; fi
+          echo "PROJ=$(dirname "$SETTINGS")" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.5"
+
+      - name: Prepare signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: |
+          KS="$RUNNER_TEMP/heixa.jks"
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$KS"
+            PASS="$KEYSTORE_PASSWORD"; ALIAS="$KEY_ALIAS"
+          else
+            PASS="heixa-ci-key"; ALIAS="heixa"
+            keytool -genkeypair -keystore "$KS" -alias "$ALIAS" -keyalg RSA -keysize 2048 \
+              -validity 10000 -storepass "$PASS" -keypass "$PASS" -dname "CN=HEiXA MUSIC"
+          fi
+          echo "HEIXA_KEYSTORE=$KS" >> "$GITHUB_ENV"
+          echo "HEIXA_KS_PASS=$PASS" >> "$GITHUB_ENV"
+          echo "HEIXA_KEY_ALIAS=$ALIAS" >> "$GITHUB_ENV"
+
+      - name: Build release APK
+        run: |
+          cd "$PROJ"
+          gradle :app:assembleRelease --no-daemon
+
+      - name: Size guard (10 MB se kam)
+        run: |
+          APK="$PROJ/app/build/outputs/apk/release/app-release.apk"
+          SIZE=$(stat -c%s "$APK")
+          echo "APK size: $SIZE bytes"
+          test "$SIZE" -lt 10485760
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HEiXA-MUSIC-apk
+          path: ${{ env.PROJ }}/app/build/outputs/apk/release/app-release.apk
